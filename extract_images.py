@@ -13,6 +13,8 @@ min_size = 50
 context_chars = 200
 SCANNED_PAGE_RATIO = 0.6
 SCANNED_SIZE_TOLERANCE = 0.12
+MAX_WIDTH = 600
+MAX_HEIGHT = 800
 
 def text_is_usable(text):
     return bool(text) and len(text.strip()) >= 3 and text.strip()
@@ -128,13 +130,61 @@ def is_scanned_pdf(doc):
         return False
     most_common_size, most_common_count = size_counter.most_common(1)[0]
     mw, mh = most_common_size
-    uniform_count = sum(
-        1 for w, h in page_area_samples
-        if abs(w - mw) / max(mw, 1) < SCANNED_SIZE_TOLERANCE
-        and abs(h - mh) / max(mh, 1) < SCANNED_SIZE_TOLERANCE
-    )
+    uniform_count = sum(1 for w, h in page_area_samples if abs(w - mw) / max(mw, 1) < SCANNED_SIZE_TOLERANCE and abs(h - mh) / max(mh, 1) < SCANNED_SIZE_TOLERANCE)
     uniform_ratio = uniform_count / len(page_area_samples) if page_area_samples else 0
     return uniform_ratio >= 0.7
+
+def save_image_jpeg(pil_img, filepath, max_width, max_height):
+    if pil_img.mode in ("RGBA", "P", "LA"):
+        pil_img = pil_img.convert("RGB")
+    scale = min(max_width / pil_img.width, max_height / pil_img.height, 1.0)
+    if scale < 1.0:
+        pil_img = pil_img.resize((int(pil_img.width * scale), int(pil_img.height * scale)), Image.LANCZOS)
+    out_bytes = BytesIO()
+    pil_img.save(out_bytes, format="JPEG", quality=95)
+    with open(filepath, "wb") as img_file:
+        img_file.write(out_bytes.getvalue())
+    return pil_img.width, pil_img.height
+
+def build_report_entry(doc, page, page_num, xref, filename, orig_w, orig_h):
+    img_rects = page.get_image_rects(xref)
+    img_rect = img_rects[0] if img_rects else fitz.Rect(0, 0, 0, 0)
+    context_lines = get_context_lines(page, img_rect)
+    if all("no usable text" in l for l in context_lines):
+        prev_text = get_context_from_prev_page(doc, page_num)
+        if prev_text:
+            context_lines = [f"  Text from previous page: {prev_text}"]
+    lines = [f"{filename}  [{orig_w}x{orig_h}]  Page {page_num+1}"]
+    lines.extend(context_lines)
+    lines.append("")
+    return lines
+
+def process_image(doc, page, page_num, img_index, xref, output_folder, min_size, max_width, max_height):
+    base_image = doc.extract_image(xref)
+    if not base_image:
+        return None
+    orig_w = base_image.get("width", 0)
+    orig_h = base_image.get("height", 0)
+    if orig_w < min_size or orig_h < min_size:
+        return None
+    filename = f"page{page_num+1:03d}_img{img_index+1:03d}.jpg"
+    filepath = os.path.join(output_folder, filename)
+    try:
+        pil_img = Image.open(BytesIO(base_image["image"]))
+        out_w, out_h = save_image_jpeg(pil_img, filepath, max_width, max_height)
+        print(f"Saved: {filepath}  ({orig_w}x{orig_h} -> {out_w}x{out_h})")
+        return build_report_entry(doc, page, page_num, xref, filename, orig_w, orig_h)
+    except Exception as e:
+        print(f"Failed to save {filename}: {e}")
+        return None
+
+def write_report(report_lines, report_path):
+    try:
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(report_lines))
+        print(f"Report written to {report_path}")
+    except Exception as e:
+        print(f"Failed to write report: {e}")
 
 def extract_images_from_pdf(pdf_path, output_folder, min_size, report_path):
     if not os.path.exists(output_folder):
@@ -156,56 +206,22 @@ def extract_images_from_pdf(pdf_path, output_folder, min_size, report_path):
     report_lines = []
     for page_num in range(len(doc)):
         page = doc[page_num]
-        image_list = page.get_images(full=True)
-        for img_index, img in enumerate(image_list):
+        for img_index, img in enumerate(page.get_images(full=True)):
             xref = img[0]
             if xref in seen_xrefs:
                 continue
             seen_xrefs.add(xref)
-            base_image = doc.extract_image(xref)
-            if not base_image:
-                continue
-            width = base_image.get("width", 0)
-            height = base_image.get("height", 0)
-            if width < min_size or height < min_size:
-                continue
-            image_bytes = base_image["image"]
-            filename = f"page{page_num+1:03d}_img{img_index+1:03d}.jpg"
-            filepath = os.path.join(output_folder, filename)
-            try:
-                pil_img = Image.open(BytesIO(image_bytes))
-                if pil_img.mode in ("RGBA", "P", "LA"):
-                    pil_img = pil_img.convert("RGB")
-                out_bytes = BytesIO()
-                pil_img.save(out_bytes, format="JPEG", quality=95)
-                with open(filepath, "wb") as img_file:
-                    img_file.write(out_bytes.getvalue())
+            entry = process_image(doc, page, page_num, img_index, xref, output_folder, min_size, MAX_WIDTH, MAX_HEIGHT)
+            if entry is not None:
                 image_count += 1
-                print(f"Saved: {filepath}  ({width}x{height})")
-                img_rects = page.get_image_rects(xref)
-                img_rect = img_rects[0] if img_rects else fitz.Rect(0, 0, 0, 0)
-                context_lines = get_context_lines(page, img_rect)
-                if all("no usable text" in l for l in context_lines):
-                    prev_text = get_context_from_prev_page(doc, page_num)
-                    if prev_text:
-                        context_lines = [f"  Text from previous page: {prev_text}"]
-                report_lines.append(f"{filename}  [{width}x{height}]  Page {page_num+1}")
-                report_lines.extend(context_lines)
-                report_lines.append("")
-            except Exception as e:
-                print(f"Failed to save {filename}: {e}")
+                report_lines.extend(entry)
     doc.close()
     print(f"Extracted {image_count} images (min size {min_size} px).")
-    try:
-        with open(report_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(report_lines))
-        print(f"Report written to {report_path}")
-    except Exception as e:
-        print(f"Failed to write report: {e}")
+    write_report(report_lines, report_path)
 
 if __name__ == "__main__":
     if Path(output_folder).is_dir():
-        print(f"Warning: Input folder already exists. Images would be placed in existing folder.")
+        print(f"Warning: Input folder already exists. Images would be placed with existing ones.")
     else:
         extract_images_from_pdf(pdf_path, output_folder, min_size, report_path)
 
