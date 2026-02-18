@@ -5,7 +5,7 @@ from PIL import Image
 from io import BytesIO
 from collections import Counter
 
-pdf_path = input("Input file without ending (input): ") or "input"
+pdf_path = input("Input file basename (input): ") or "input"
 output_folder = "output" + "_" + pdf_path
 pdf_path = pdf_path + ".pdf"
 report_path = f"{output_folder}/extraction_report.txt"
@@ -67,31 +67,53 @@ def get_text_after_image(page, img_rect):
     return best_text[:context_chars]
 
 def get_context_lines(page, img_rect):
-    lines = []
-    before = get_text_before_image(page, img_rect)
-    if text_is_usable(before):
-        lines.append(f"  Preceding: {before}")
-    after = get_text_after_image(page, img_rect)
-    if text_is_usable(after):
-        lines.append(f"  Following: {after}")
-    headers = get_headers_on_page(page)
-    if headers:
-        lines.append(f"  Header/title: {headers[0][:context_chars]}")
-    if not lines:
-        all_blocks = get_all_blocks(page)
-        for _, _, _, _, text in all_blocks:
-            if text_is_usable(text):
-                lines.append(f"  Text sample: {text[:context_chars]}")
-                break
-    return lines if lines else ["  (no usable text found on page)"]
+    chosen = nearest_blocks(page, img_rect)
+    if chosen:
+        return [f"  {t[:context_chars]}" for t in chosen]
+    blocks = get_all_blocks(page)
+    for _,_,_,_,text in blocks:
+        if looks_like_body(text):
+            return [f"  {text[:context_chars]}"]
+    return ["  (no usable text found on page)"]
+
+def looks_like_body(text):
+    t = text.strip()
+    if len(t) < 40:
+        return False
+    letters = sum(c.isalpha() for c in t)
+    if letters < 20:
+        return False
+    uppers = sum(c.isupper() for c in t)
+    if uppers / max(letters,1) > 0.6:
+        return False
+    words = t.split()
+    if len(words) < 6:
+        return False
+    return True
+
+def nearest_blocks(page, img_rect):
+    blocks = get_all_blocks(page)
+    scored = []
+    for bx0, by0, bx1, by1, text in blocks:
+        if not looks_like_body(text):
+            continue
+        if by1 <= img_rect.y0:
+            dist = img_rect.y0 - by1
+        elif by0 >= img_rect.y1:
+            dist = by0 - img_rect.y1
+        else:
+            dist = 0
+        scored.append((dist, text))
+    scored.sort(key=lambda x:x[0])
+    return [t for _,t in scored[:3]]
 
 def get_context_from_prev_page(doc, page_num):
     if page_num == 0:
         return None
-    prev_page = doc[page_num - 1]
-    blocks = get_all_blocks(prev_page)
-    for _, _, _, _, text in reversed(blocks):
-        if text_is_usable(text):
+    prev = doc[page_num-1]
+    blocks = get_all_blocks(prev)
+    for _,_,_,_,text in reversed(blocks):
+        if looks_like_body(text):
             return text[-context_chars:]
     return None
 
@@ -153,8 +175,8 @@ def build_report_entry(doc, page, page_num, xref, filename, orig_w, orig_h):
     if all("no usable text" in l for l in context_lines):
         prev_text = get_context_from_prev_page(doc, page_num)
         if prev_text:
-            context_lines = [f"  Text from previous page: {prev_text}"]
-    lines = [f"{filename}  [{orig_w}x{orig_h}]  Page {page_num+1}"]
+            context_lines = [f"  {prev_text}"]
+    lines = [f"{filename}  Page {page_num+1}"]
     lines.extend(context_lines)
     lines.append("")
     return lines
