@@ -181,7 +181,7 @@ def build_report_entry(doc, page, page_num, xref, filename, orig_w, orig_h):
     lines.append("")
     return lines
 
-def process_image(doc, page, page_num, img_index, xref, output_folder, min_size, max_width, max_height):
+def process_image(doc, page, page_num, img_index, xref, output_folder, min_size, max_width, max_height, running_index):
     base_image = doc.extract_image(xref)
     if not base_image:
         return None
@@ -189,7 +189,7 @@ def process_image(doc, page, page_num, img_index, xref, output_folder, min_size,
     orig_h = base_image.get("height", 0)
     if orig_w < min_size or orig_h < min_size:
         return None
-    filename = f"page{page_num+1:03d}_img{img_index+1:03d}.jpg"
+    filename = f"{running_index:04d}.jpg"
     filepath = os.path.join(output_folder, filename)
     try:
         pil_img = Image.open(BytesIO(base_image["image"]))
@@ -226,6 +226,7 @@ def extract_images_from_pdf(pdf_path, output_folder, min_size, report_path):
     image_count = 0
     seen_xrefs = set()
     report_lines = []
+    running_index = 1
     for page_num in range(len(doc)):
         page = doc[page_num]
         for img_index, img in enumerate(page.get_images(full=True)):
@@ -233,9 +234,10 @@ def extract_images_from_pdf(pdf_path, output_folder, min_size, report_path):
             if xref in seen_xrefs:
                 continue
             seen_xrefs.add(xref)
-            entry = process_image(doc, page, page_num, img_index, xref, output_folder, min_size, MAX_WIDTH, MAX_HEIGHT)
+            entry = process_image(doc, page, page_num, img_index, xref, output_folder, min_size, MAX_WIDTH, MAX_HEIGHT, running_index)
             if entry is not None:
                 image_count += 1
+                running_index += 1
                 report_lines.extend(entry)
     doc.close()
     print(f"Extracted {image_count} images (min size {min_size} px).")
