@@ -66,28 +66,16 @@ def get_text_after_image(page, img_rect):
             best_text = text
     return best_text[:context_chars]
 
-def get_context_lines(page, img_rect):
-    chosen = nearest_blocks(page, img_rect)
-    if chosen:
-        return [f"  {t[:context_chars]}" for t in chosen]
-    blocks = get_all_blocks(page)
-    for _,_,_,_,text in blocks:
-        if looks_like_body(text):
-            return [f"  {text[:context_chars]}"]
-    return ["  (no usable text found on page)"]
-
 def looks_like_body(text):
     t = text.strip()
-    if len(t) < 40:
-        return False
-    letters = sum(c.isalpha() for c in t)
-    if letters < 20:
-        return False
-    uppers = sum(c.isupper() for c in t)
-    if uppers / max(letters,1) > 0.6:
+    if len(t) < 200:
         return False
     words = t.split()
-    if len(words) < 6:
+    if len(words) < 30:
+        return False
+    letters = sum(c.isalpha() for c in t)
+    uppers = sum(c.isupper() for c in t)
+    if uppers / max(letters, 1) > 0.5:
         return False
     return True
 
@@ -168,14 +156,36 @@ def save_image_jpeg(pil_img, filepath, max_width, max_height):
         img_file.write(out_bytes.getvalue())
     return pil_img.width, pil_img.height
 
+def get_body_text_nearby(doc, page_num, img_rect, max_search_pages=5):
+    def best_body_from_page(p):
+        blocks = get_all_blocks(p)
+        candidates = [(len(text), text) for _, _, _, _, text in blocks if looks_like_body(text)]
+        candidates.sort(reverse=True)
+        return candidates[0][1] if candidates else None
+    results = []
+    same_page = best_body_from_page(doc[page_num])
+    if same_page:
+        results.append(f"  {same_page[:context_chars]}")
+    for i in range(1, max_search_pages + 1):
+        prev_idx = page_num - i
+        if prev_idx >= 0:
+            found = best_body_from_page(doc[prev_idx])
+            if found:
+                results.append(f"  (p{prev_idx+1}) {found[-context_chars:]}")
+                break
+    for i in range(1, max_search_pages + 1):
+        next_idx = page_num + i
+        if next_idx < len(doc):
+            found = best_body_from_page(doc[next_idx])
+            if found:
+                results.append(f"  (p{next_idx+1}) {found[:context_chars]}")
+                break
+    return results if results else ["  (no usable text found nearby)"]
+
 def build_report_entry(doc, page, page_num, xref, filename, orig_w, orig_h):
     img_rects = page.get_image_rects(xref)
     img_rect = img_rects[0] if img_rects else fitz.Rect(0, 0, 0, 0)
-    context_lines = get_context_lines(page, img_rect)
-    if all("no usable text" in l for l in context_lines):
-        prev_text = get_context_from_prev_page(doc, page_num)
-        if prev_text:
-            context_lines = [f"  {prev_text}"]
+    context_lines = get_body_text_nearby(doc, page_num, img_rect, max_search_pages=3)
     lines = [f"{filename} Page {page_num+1}"]
     lines.extend(context_lines)
     lines.append("")
@@ -189,7 +199,7 @@ def process_image(doc, page, page_num, img_index, xref, output_folder, min_size,
     orig_h = base_image.get("height", 0)
     if orig_w < min_size or orig_h < min_size:
         return None
-    filename = f"{running_index:04d}.jpg"
+    filename = f"img{running_index:04d}.jpg"
     filepath = os.path.join(output_folder, filename)
     try:
         pil_img = Image.open(BytesIO(base_image["image"]))
