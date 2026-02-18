@@ -176,7 +176,7 @@ def build_report_entry(doc, page, page_num, xref, filename, orig_w, orig_h):
         prev_text = get_context_from_prev_page(doc, page_num)
         if prev_text:
             context_lines = [f"  {prev_text}"]
-    lines = [f"{filename}  Page {page_num+1}"]
+    lines = [f"{filename} Page {page_num+1}"]
     lines.extend(context_lines)
     lines.append("")
     return lines
@@ -219,8 +219,7 @@ def extract_images_from_pdf(pdf_path, output_folder, min_size, report_path):
         return
     print("Checking PDF structure...")
     if is_scanned_pdf(doc):
-        print("WARNING: This PDF appears to be a scanned document (large uniform images covering most pages).")
-        print("Extraction aborted. Use an OCR tool to convert this PDF to text+image format first.")
+        print("WARNING: This PDF appears to be a scanned document (large uniform images covering most pages). Extraction aborted.")
         doc.close()
         return
     image_count = 0
@@ -240,7 +239,7 @@ def extract_images_from_pdf(pdf_path, output_folder, min_size, report_path):
                 running_index += 1
                 report_lines.extend(entry)
     doc.close()
-    print(f"Extracted {image_count} images (min size {min_size} px).")
+    print(f"Extracted {image_count} images with size over {min_size} px.")
     write_report(report_lines, report_path)
 
 if __name__ == "__main__":
